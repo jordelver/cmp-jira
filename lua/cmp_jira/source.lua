@@ -1,7 +1,5 @@
 local source = {}
 
-local cache = {}
-
 local function split(str, pattern)
   local splitted = {}
   for s in str:gmatch(pattern) do
@@ -14,7 +12,13 @@ local function lines(str)
   return split(str, "[^\r\n]+")
 end
 
-local function fetch_issues(callback)
+source.new = function()
+  local tbl = setmetatable({ cache = nil }, { __index = source })
+  tbl:fetch_issues(nil)
+  return tbl
+end
+
+source.fetch_issues = function(self, callback)
   vim.system(
     {
       (vim.uv.os_uname().sysname == "Windows_NT") and "jira.exe" or "jira",
@@ -45,38 +49,77 @@ local function fetch_issues(callback)
       local items = {}
       for _, issue in ipairs(issues) do
         table.insert(items, {
-          label = string.format("%s %s %s %s", issue.KEY, issue.TYPE, issue.STATUS, issue.SUMMARY),
-          insertText = issue.KEY, -- the text to insert when completed
+          issue = issue,
+          filterText = string.format("%s %s %s %s", issue.KEY, issue.TYPE, issue.STATUS, issue.SUMMARY),
+          documentation = string.format("[%s] [%s] [%s] %s", issue.KEY, issue.TYPE, issue.STATUS, issue.SUMMARY),
+          label = string.format("[%s] %s", issue.KEY, issue.SUMMARY),
         })
       end
 
+      self.cache = items
       if callback ~= nil and type(callback) == "function" then
         callback { items = items, isIncomplete = false }
       end
-      cache = items
     end
   )
 end
 
-source.new = function()
-  fetch_issues(nil)
-  return setmetatable({ cache = {} }, { __index = source })
+local function add_remove_trigger_char_opts(tbl, request)
+  local input = string.sub(request.context.cursor_before_line, request.offset - 1)
+
+  tbl.items = vim.tbl_map(function(item)
+    item = vim.tbl_extend("error", item, {
+      textEdit = {
+        newText = item.issue.KEY,
+        range = {
+          ["start"] = {
+            line = request.context.cursor.row - 1,
+            character = request.context.cursor.col - 1 - #input,
+          },
+          ["end"] = {
+            line = request.context.cursor.row - 1,
+            character = request.context.cursor.col - 1,
+          },
+        }
+      },
+    })
+    return item
+  end, tbl.items)
+
+  return tbl
 end
 
-source.complete = function(self, request, callback)
-  if not self.cache then
-    fetch_issues(callback)
+function source:complete(params, callback)
+  local input = string.sub(params.context.cursor_before_line, params.offset - 1)
+  local prefix = string.sub(params.context.cursor_before_line, 1, params.offset - 1)
+  -- Only complete at the beginning of the line and when the trigger character has been typed.
+  if vim.startswith(input, '#') and (prefix == '#') then
+    if not self.cache then
+      self:fetch_issues(function(tbl)
+        tbl = add_remove_trigger_char_opts(tbl, params)
+        callback(tbl)
+      end)
+    else
+      local tbl = { items = self.cache, isIncomplete = false }
+      tbl = add_remove_trigger_char_opts(tbl, params)
+      callback(tbl)
+    end
   else
-    callback { items = cache, isIncomplete = false }
+    callback({ isIncomplete = true })
   end
 end
 
+function source:execute(completion_item, callback)
+  print(vim.inspect(completion_item))
+  callback(completion_item)
+end
+
 source.get_trigger_characters = function()
-  return { "$" }
+  return { "#" }
 end
 
 source.get_keyword_pattern = function()
-  return [[$\S*]]
+  return [[#\k\+]]
 end
 
 source.is_available = function()
