@@ -29,7 +29,30 @@ source.fetch_issues = function(self, callback)
       "--plain"
     }, { text = true },
     function(obj)
+      local function finish(items)
+        if callback ~= nil and type(callback) == "function" then
+          callback { items = items, isIncomplete = false }
+        end
+      end
+
+      -- jira may fail (auth, network, API changes) or list no issues; neither must raise in this callback
+      if obj.code ~= 0 or not obj.stdout or obj.stdout == "" then
+        if obj.code ~= 0 then
+          vim.schedule(function()
+            vim.notify("cmp_jira: jira exited with code " .. obj.code .. ": " .. vim.trim(obj.stderr or ""),
+              vim.log.levels.WARN)
+          end)
+        end
+        -- leave the cache empty so the next completion retries
+        finish({})
+        return
+      end
+
       local lines = lines(obj.stdout)
+      if #lines == 0 then
+        finish({})
+        return
+      end
       lines = vim.tbl_map(function(value)
         return value:gsub("\t+", ";")
       end, lines)
@@ -57,9 +80,7 @@ source.fetch_issues = function(self, callback)
       end
 
       self.cache = items
-      if callback ~= nil and type(callback) == "function" then
-        callback { items = items, isIncomplete = false }
-      end
+      finish(items)
     end
   )
 end
